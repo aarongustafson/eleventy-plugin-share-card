@@ -41,13 +41,17 @@
 		"node": ">=20"
 	},
 	"scripts": {
-		"lint": "npm run lint:eslint && npm run lint:prettier",
 		"format": "npm run format:eslint && npm run format:prettier",
-		"lint:eslint": "eslint .",
 		"format:eslint": "eslint . --fix",
-		"lint:prettier": "prettier \"**/*.js\" --check --ignore-path .gitignore",
 		"format:prettier": "prettier \"**/*.js\" --write --ignore-path .gitignore",
-		"postversion": "git push --follow-tags"
+		"lint": "npm run lint:eslint && npm run lint:prettier",
+		"lint:eslint": "eslint .",
+		"lint:prettier": "prettier \"**/*.js\" --check --ignore-path .gitignore",
+		"prepublishOnly": "npm run lint && npm run test",
+		"preversion": "npm run lint && npm run test",
+		"postversion": "git push --follow-tags",
+		"test": "vitest run",
+		"test:watch": "vitest"
 	},
 	"files": [
 		"index.js",
@@ -59,7 +63,8 @@
 	"devDependencies": {
 		"eslint": "^9.39.1",
 		"eslint-config-prettier": "^10.1.8",
-		"prettier": "^3.6.2"
+		"prettier": "^3.6.2",
+		"vitest": "^4.1.5"
 	},
 	"publishConfig": {
 		"access": "public"
