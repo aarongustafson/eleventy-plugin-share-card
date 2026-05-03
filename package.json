@@ -25,10 +25,10 @@
 		"social-image",
 		"sharp"
 	],
-	"author": "Aaron Gustafson",
+	"author": "Aaron Gustafson <aaron@easy-designs.net> (https://www.aaron-gustafson.com/)",
 	"license": "MIT",
 	"peerDependencies": {
-		"@11ty/eleventy": ">=2.0.0",
+		"@11ty/eleventy": ">=3.0.0",
 		"sharp": ">=0.33.0"
 	},
 	"peerDependenciesMeta": {
@@ -37,7 +37,16 @@
 		}
 	},
 	"engines": {
-		"node": ">=18.0.0"
+		"node": ">=20"
+	},
+	"scripts": {
+		"lint": "npm run lint:eslint && npm run lint:prettier",
+		"format": "npm run format:eslint && npm run format:prettier",
+		"lint:eslint": "eslint .",
+		"format:eslint": "eslint . --fix",
+		"lint:prettier": "prettier \"**/*.js\" --check --ignore-path .gitignore",
+		"format:prettier": "prettier \"**/*.js\" --write --ignore-path .gitignore",
+		"postversion": "git push --follow-tags"
 	},
 	"files": [
 		"index.js",
@@ -45,5 +54,13 @@
 		"text-layout.js",
 		"README.md",
 		"LICENSE"
-	]
+	],
+	"devDependencies": {
+		"eslint": "^9.39.1",
+		"eslint-config-prettier": "^10.1.8",
+		"prettier": "^3.6.2"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
 }
