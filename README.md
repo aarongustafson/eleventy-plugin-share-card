@@ -13,10 +13,10 @@ Build-time social share-card (OG image) generator for [Eleventy](https://www.11t
 ## Installation
 
 ```bash
-npm install eleventy-plugin-share-card sharp
+npm install eleventy-plugin-share-card sharp proper-lockfile
 ```
 
-> `sharp` is a peer dependency. If your project already has it, you're all set.
+> `sharp` and `proper-lockfile` are peer dependencies. If your project already has them, you're all set.
 
 ### Optional: fonts via fontsource
 
@@ -42,6 +42,7 @@ export default (eleventyConfig) => {
     outputDir:     "./src/static/i/share-cards",
     outputUrlPath: "/i/share-cards",
     cacheFile:     "./_cache/share-cards.json",
+    verbose:       true,
     imageWidth:    1280,
     imageHeight:   669,
     layers: [
@@ -84,6 +85,7 @@ const generateShareCard = createGenerator({
   baseImagePath: "./src/_images/share-card.jpg",
   outputDir:     "./src/static/i/share-cards",
   outputUrlPath: "/i/share-cards",
+  verbose:       true,
   layers: [
     { font: "Source Serif 4", fontPath: "...", fontSize: 72, fontWeight: 700,
       color: "#2C2825", x: 480, y: { from: "bottom", value: 205 }, maxWidth: 760, lineSpacing: -18 },
@@ -118,6 +120,7 @@ export default {
 | `outputDir` | `string` | ✅ | — | Directory where generated share-card images are written. Created automatically if missing. |
 | `outputUrlPath` | `string` | ✅ | — | URL prefix returned in the generated image path (e.g. `"/i/share-cards"`). |
 | `cacheFile` | `string` | | `./_cache/share-cards.json` | Path to the JSON cache file. |
+| `verbose` | `boolean` | | `false` | Logs cache hits/misses and generation progress to the console. |
 | `imageWidth` | `number` | | `1280` | Width of `baseImagePath` in pixels (used for SVG canvas size). |
 | `imageHeight` | `number` | | `669` | Height of `baseImagePath` in pixels. |
 | `jpegQuality` | `number` | | `90` | Output JPEG quality (1–100). |
