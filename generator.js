@@ -11,11 +11,11 @@
  * the filesystem.
  */
 
-import crypto from "crypto";
-import fs from "fs";
-import path from "path";
-import sharp from "sharp";
-import { buildTextElements, escapeXml } from "./text-layout.js";
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import sharp from 'sharp';
+import { buildTextElements, escapeXml } from './text-layout.js';
 
 // ---------------------------------------------------------------------------
 // Cache helpers
@@ -30,7 +30,7 @@ import { buildTextElements, escapeXml } from "./text-layout.js";
  */
 function loadCache(cacheFile) {
 	try {
-		return JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+		return JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
 	} catch {
 		return {};
 	}
@@ -47,7 +47,7 @@ function saveCache(cacheFile, cache) {
 		fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
 		fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2));
 	} catch (err) {
-		console.error("[share-card] Could not write cache:", err.message);
+		console.error('[share-card] Could not write cache:', err.message);
 	}
 }
 
@@ -65,7 +65,7 @@ function saveCache(cacheFile, cache) {
  * @returns {string} base64 data URI or ''
  */
 function loadFontAsDataUri(fontPath) {
-	if (!fontPath) return "";
+	if (!fontPath) return '';
 
 	const resolved = path.isAbsolute(fontPath)
 		? fontPath
@@ -75,14 +75,18 @@ function loadFontAsDataUri(fontPath) {
 		const data = fs.readFileSync(resolved);
 		const ext = path.extname(resolved).toLowerCase().slice(1);
 		const mime =
-			ext === "woff2" ? "font/woff2"
-			: ext === "woff" ? "font/woff"
-			: ext === "ttf" ? "font/ttf"
-			: ext === "otf" ? "font/otf"
-			: "font/ttf";
-		return `data:${mime};base64,${data.toString("base64")}`;
+			ext === 'woff2'
+				? 'font/woff2'
+				: ext === 'woff'
+					? 'font/woff'
+					: ext === 'ttf'
+						? 'font/ttf'
+						: ext === 'otf'
+							? 'font/otf'
+							: 'font/ttf';
+		return `data:${mime};base64,${data.toString('base64')}`;
 	} catch {
-		return "";
+		return '';
 	}
 }
 
@@ -103,30 +107,30 @@ function buildSvg(layers, texts, { imageWidth, imageHeight }) {
 	const fontFaces = layers
 		.filter((l, i) => l.fontData && texts[i])
 		.map((l) => {
-			return `\t\t@font-face { font-family: '${escapeXml(l.font)}'; font-weight: ${l.fontWeight ?? 400}; src: url('${l.fontData}') format('${l.fontFormat ?? "woff2"}'); }`;
+			return `\t\t@font-face { font-family: '${escapeXml(l.font)}'; font-weight: ${l.fontWeight ?? 400}; src: url('${l.fontData}') format('${l.fontFormat ?? 'woff2'}'); }`;
 		})
-		.join("\n");
+		.join('\n');
 
 	// Build text element groups
 	const textMarkup = layers
 		.map((layer, i) => {
 			const text = texts[i];
-			if (!text) return "";
+			if (!text) return '';
 			return buildTextElements(layer, text, imageHeight);
 		})
 		.filter(Boolean)
-		.join("\n");
+		.join('\n');
 
 	return [
 		`<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidth}" height="${imageHeight}" overflow="hidden">`,
 		fontFaces
 			? `\t<defs>\n\t\t<style>\n${fontFaces}\n\t\t</style>\n\t</defs>`
-			: "",
+			: '',
 		textMarkup,
-		"</svg>",
+		'</svg>',
 	]
 		.filter(Boolean)
-		.join("\n");
+		.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -144,11 +148,11 @@ function buildSvg(layers, texts, { imageWidth, imageHeight }) {
  * @param {string}   configSalt - stable string representing the current layer config
  * @returns {string} first 12 hex chars of the SHA-256 digest
  */
-function contentHash(texts, configSalt = "") {
+function contentHash(texts, configSalt = '') {
 	return crypto
-		.createHash("sha256")
-		.update(texts.join("\x00") + "\x01" + configSalt)
-		.digest("hex")
+		.createHash('sha256')
+		.update(texts.join('\x00') + '\x01' + configSalt)
+		.digest('hex')
 		.slice(0, 12);
 }
 
@@ -207,16 +211,19 @@ export function createGenerator(options = {}) {
 		baseImagePath,
 		outputDir,
 		outputUrlPath,
-		cacheFile = "./_cache/share-cards.json",
+		cacheFile = './_cache/share-cards.json',
 		imageWidth = 1280,
 		imageHeight = 669,
 		jpegQuality = 90,
 		layers = [],
 	} = options;
 
-	if (!baseImagePath) throw new Error("[share-card] options.baseImagePath is required");
-	if (!outputDir) throw new Error("[share-card] options.outputDir is required");
-	if (!outputUrlPath) throw new Error("[share-card] options.outputUrlPath is required");
+	if (!baseImagePath)
+		throw new Error('[share-card] options.baseImagePath is required');
+	if (!outputDir)
+		throw new Error('[share-card] options.outputDir is required');
+	if (!outputUrlPath)
+		throw new Error('[share-card] options.outputUrlPath is required');
 
 	// Resolve the base image path once
 	const resolvedBaseImage = path.isAbsolute(baseImagePath)
@@ -228,13 +235,17 @@ export function createGenerator(options = {}) {
 		const fontData = loadFontAsDataUri(layer.fontPath);
 		const ext = layer.fontPath
 			? path.extname(layer.fontPath).toLowerCase().slice(1)
-			: "woff2";
+			: 'woff2';
 		const fontFormat =
-			ext === "woff2" ? "woff2"
-			: ext === "woff" ? "woff"
-			: ext === "ttf" ? "truetype"
-			: ext === "otf" ? "opentype"
-			: "woff2";
+			ext === 'woff2'
+				? 'woff2'
+				: ext === 'woff'
+					? 'woff'
+					: ext === 'ttf'
+						? 'truetype'
+						: ext === 'otf'
+							? 'opentype'
+							: 'woff2';
 		return { ...layer, fontData, fontFormat };
 	});
 
@@ -255,14 +266,16 @@ export function createGenerator(options = {}) {
 	 */
 	return async function generateShareCard(texts, slug) {
 		if (!slug) {
-			console.warn("[share-card] No slug provided; skipping image generation.");
-			return "";
+			console.warn(
+				'[share-card] No slug provided; skipping image generation.',
+			);
+			return '';
 		}
 
 		const hash = contentHash(texts, configSalt);
 		const filename = `${slug}.jpg`;
 		const outputPath = path.resolve(process.cwd(), outputDir, filename);
-		const publicUrl = `${outputUrlPath.replace(/\/$/, "")}/${filename}`;
+		const publicUrl = `${outputUrlPath.replace(/\/$/, '')}/${filename}`;
 
 		// Check the cache — skip generation if the hash matches and the file exists
 		const cache = loadCache(cacheFile);
@@ -271,20 +284,34 @@ export function createGenerator(options = {}) {
 		}
 
 		// Generate the SVG overlay
-		const svg = buildSvg(preparedLayers, texts, { imageWidth, imageHeight });
+		const svg = buildSvg(preparedLayers, texts, {
+			imageWidth,
+			imageHeight,
+		});
 
 		try {
 			await sharp(resolvedBaseImage)
 				.composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
-				.jpeg({ quality: jpegQuality, progressive: true, mozjpeg: true })
+				.jpeg({
+					quality: jpegQuality,
+					progressive: true,
+					mozjpeg: true,
+				})
 				.toFile(outputPath);
 
 			// Update the cache
-			cache[slug] = { hash, url: publicUrl, generated: new Date().toISOString() };
+			cache[slug] = {
+				hash,
+				url: publicUrl,
+				generated: new Date().toISOString(),
+			};
 			saveCache(cacheFile, cache);
 		} catch (err) {
-			console.error(`[share-card] Failed to generate image for "${slug}":`, err.message);
-			return "";
+			console.error(
+				`[share-card] Failed to generate image for "${slug}":`,
+				err.message,
+			);
+			return '';
 		}
 
 		return publicUrl;

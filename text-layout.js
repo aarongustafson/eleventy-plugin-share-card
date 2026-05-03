@@ -28,7 +28,7 @@ export function estimateCharWidth(char, fontSize) {
 	if (/[mMwW]/.test(char)) return fontSize * 0.75; // wide
 	if (/[A-Z]/.test(char)) return fontSize * 0.65; // uppercase
 	if (/[0-9]/.test(char)) return fontSize * 0.58; // digits
-	if (char === " ") return fontSize * 0.28; // space
+	if (char === ' ') return fontSize * 0.28; // space
 	return fontSize * 0.52; // average lowercase
 }
 
@@ -61,15 +61,16 @@ export function estimateTextWidth(text, fontSize) {
  * @returns {string[]} array of lines (never empty — returns [''] for empty input)
  */
 export function wrapText(text, maxWidth, fontSize, charWidthRatio = 1) {
-	if (!text) return [""];
+	if (!text) return [''];
 
 	// Scaled width helpers — apply charWidthRatio consistently
-	const scaledTextWidth = (str) => estimateTextWidth(str, fontSize) * charWidthRatio;
-	const scaledSpaceWidth = estimateCharWidth(" ", fontSize) * charWidthRatio;
+	const scaledTextWidth = (str) =>
+		estimateTextWidth(str, fontSize) * charWidthRatio;
+	const scaledSpaceWidth = estimateCharWidth(' ', fontSize) * charWidthRatio;
 
 	const words = text.split(/\s+/).filter(Boolean);
 	const lines = [];
-	let currentLine = "";
+	let currentLine = '';
 	let currentWidth = 0;
 
 	for (const word of words) {
@@ -89,7 +90,9 @@ export function wrapText(text, maxWidth, fontSize, charWidthRatio = 1) {
 					let hi = remaining.length;
 					while (lo < hi) {
 						const mid = Math.ceil((lo + hi) / 2);
-						if (scaledTextWidth(remaining.slice(0, mid)) <= maxWidth) {
+						if (
+							scaledTextWidth(remaining.slice(0, mid)) <= maxWidth
+						) {
 							lo = mid;
 						} else {
 							hi = mid - 1;
@@ -111,7 +114,7 @@ export function wrapText(text, maxWidth, fontSize, charWidthRatio = 1) {
 	}
 
 	if (currentLine) lines.push(currentLine);
-	return lines.length ? lines : [""];
+	return lines.length ? lines : [''];
 }
 
 /**
@@ -122,11 +125,11 @@ export function wrapText(text, maxWidth, fontSize, charWidthRatio = 1) {
  */
 export function escapeXml(str) {
 	return String(str)
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&apos;");
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&apos;');
 }
 
 /**
@@ -148,10 +151,10 @@ export function buildTextElements(layer, text, imageHeight) {
 		x = 0,
 		y,
 		fontSize,
-		font = "serif",
-		fontFallback = "serif",
+		font = 'serif',
+		fontFallback = 'serif',
 		fontWeight = 400,
-		color = "#000000",
+		color = '#000000',
 		maxWidth,
 		lineSpacing = 0,
 		charWidthRatio = 1,
@@ -174,7 +177,7 @@ export function buildTextElements(layer, text, imageHeight) {
 	const lines = wrapText(text, maxWidth, fontSize, charWidthRatio);
 
 	// Normalise color — accept "RRGGBB" or "#RRGGBB"
-	const fill = color.startsWith("#") ? color : `#${color}`;
+	const fill = color.startsWith('#') ? color : `#${color}`;
 
 	// When constrainToWidth is true, lines whose estimated width is ≥ 70% of
 	// maxWidth get a horizontal SVG scale transform to fit them inside maxWidth.
@@ -196,28 +199,62 @@ export function buildTextElements(layer, text, imageHeight) {
 
 	const elements = [];
 
-	if (typeof y === "object" && y.from === "bottom") {
+	if (typeof y === 'object' && y.from === 'bottom') {
 		// South gravity: the last line's baseline is at (imageHeight - y.value)
 		const lastBaseline = imageHeight - y.value;
 		for (let i = lines.length - 1; i >= 0; i--) {
 			const offset = lines.length - 1 - i; // 0 for last line, 1 for second-to-last …
 			const baseline = lastBaseline - offset * lineHeight;
-			elements.unshift(buildTextEl(lines[i], x, baseline, font, fontFallback, fontWeight, fontSize, fill, getScaleX(lines[i])));
+			elements.unshift(
+				buildTextEl(
+					lines[i],
+					x,
+					baseline,
+					font,
+					fontFallback,
+					fontWeight,
+					fontSize,
+					fill,
+					getScaleX(lines[i]),
+				),
+			);
 		}
 	} else {
 		// North gravity (default): the first line's baseline is at (y + fontSize)
-		const yValue = typeof y === "object" ? y.value : (y ?? 0);
+		const yValue = typeof y === 'object' ? y.value : (y ?? 0);
 		const firstBaseline = yValue + fontSize;
 		for (let i = 0; i < lines.length; i++) {
 			const baseline = firstBaseline + i * lineHeight;
-			elements.push(buildTextEl(lines[i], x, baseline, font, fontFallback, fontWeight, fontSize, fill, getScaleX(lines[i])));
+			elements.push(
+				buildTextEl(
+					lines[i],
+					x,
+					baseline,
+					font,
+					fontFallback,
+					fontWeight,
+					fontSize,
+					fill,
+					getScaleX(lines[i]),
+				),
+			);
 		}
 	}
 
-	return elements.join("\n");
+	return elements.join('\n');
 }
 
-function buildTextEl(text, x, y, font, fontFallback, weight, size, fill, scaleX = 1) {
+function buildTextEl(
+	text,
+	x,
+	y,
+	font,
+	fontFallback,
+	weight,
+	size,
+	fill,
+	scaleX = 1,
+) {
 	const inner = `<text x="${x}" y="${y.toFixed(2)}" font-family="${escapeXml(font)}, ${escapeXml(fontFallback)}" font-weight="${weight}" font-size="${size}" fill="${fill}">${escapeXml(text)}</text>`;
 	if (scaleX < 1) {
 		// Wrap in a transform group that compresses the text horizontally around

@@ -22,9 +22,9 @@
  * See README.md for the full options reference and worked examples.
  */
 
-export { createGenerator } from "./generator.js";
+export { createGenerator } from './generator.js';
 
-import { createGenerator } from "./generator.js";
+import { createGenerator } from './generator.js';
 
 /**
  * Eleventy plugin entry point.
@@ -46,7 +46,7 @@ export default function shareCardPlugin(eleventyConfig, options = {}) {
 	 * JavaScript/data-file example:
 	 *   const url = await this.shareCard([title, tagline], slug);
 	 */
-	eleventyConfig.addFilter("shareCard", async function (texts, slug) {
+	eleventyConfig.addFilter('shareCard', async function (texts, slug) {
 		return generate(Array.isArray(texts) ? texts : [texts], slug);
 	});
 }
