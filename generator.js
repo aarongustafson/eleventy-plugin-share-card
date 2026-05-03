@@ -14,6 +14,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import lockfile from 'proper-lockfile';
 import sharp from 'sharp';
 import { buildTextElements, escapeXml } from './text-layout.js';
 
@@ -26,14 +27,24 @@ import { buildTextElements, escapeXml } from './text-layout.js';
  * Returns an empty object when the file doesn't exist or is unreadable.
  *
  * @param {string} cacheFile - absolute or relative path to the JSON cache file
- * @returns {Record<string, {hash:string, url:string, generated:string}>}
+ * @returns {Record<string, {hash:string, url:string}>}
  */
 function loadCache(cacheFile) {
-	try {
-		return JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-	} catch {
-		return {};
-	}
+  try {
+    return JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Resolve the lock file path used to coordinate cache access.
+ *
+ * @param {string} cacheFile
+ * @returns {string}
+ */
+function getCacheLockFile(cacheFile) {
+  return `${cacheFile}.lock`;
 }
 
 /**
@@ -43,12 +54,47 @@ function loadCache(cacheFile) {
  * @param {object} cache
  */
 function saveCache(cacheFile, cache) {
-	try {
-		fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-		fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2));
-	} catch (err) {
-		console.error('[share-card] Could not write cache:', err.message);
-	}
+  try {
+    fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+    const tmpFile = `${cacheFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(cache, null, 2));
+    fs.renameSync(tmpFile, cacheFile);
+  } catch (err) {
+    console.error('[share-card] Could not write cache:', err.message);
+  }
+}
+
+/**
+ * Run a callback while holding an exclusive lock for this cache file.
+ *
+ * @template T
+ * @param {string} cacheFile
+ * @param {(cache: Record<string, {hash:string, url:string}>) => Promise<T>} callback
+ * @returns {Promise<T>}
+ */
+async function withCacheLock(cacheFile, callback) {
+  const lockFile = getCacheLockFile(cacheFile);
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  if (!fs.existsSync(lockFile)) {
+    fs.writeFileSync(lockFile, '');
+  }
+
+  const release = await lockfile.lock(lockFile, {
+    realpath: false,
+    retries: {
+      retries: 20,
+      factor: 1.2,
+      minTimeout: 25,
+      maxTimeout: 250,
+    },
+  });
+
+  try {
+    const cache = loadCache(cacheFile);
+    return await callback(cache);
+  } finally {
+    await release();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -65,29 +111,29 @@ function saveCache(cacheFile, cache) {
  * @returns {string} base64 data URI or ''
  */
 function loadFontAsDataUri(fontPath) {
-	if (!fontPath) return '';
+  if (!fontPath) return '';
 
-	const resolved = path.isAbsolute(fontPath)
-		? fontPath
-		: path.resolve(process.cwd(), fontPath);
+  const resolved = path.isAbsolute(fontPath)
+    ? fontPath
+    : path.resolve(process.cwd(), fontPath);
 
-	try {
-		const data = fs.readFileSync(resolved);
-		const ext = path.extname(resolved).toLowerCase().slice(1);
-		const mime =
-			ext === 'woff2'
-				? 'font/woff2'
-				: ext === 'woff'
-					? 'font/woff'
-					: ext === 'ttf'
-						? 'font/ttf'
-						: ext === 'otf'
-							? 'font/otf'
-							: 'font/ttf';
-		return `data:${mime};base64,${data.toString('base64')}`;
-	} catch {
-		return '';
-	}
+  try {
+    const data = fs.readFileSync(resolved);
+    const ext = path.extname(resolved).toLowerCase().slice(1);
+    const mime =
+      ext === 'woff2'
+        ? 'font/woff2'
+        : ext === 'woff'
+          ? 'font/woff'
+          : ext === 'ttf'
+            ? 'font/ttf'
+            : ext === 'otf'
+              ? 'font/otf'
+              : 'font/ttf';
+    return `data:${mime};base64,${data.toString('base64')}`;
+  } catch {
+    return '';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -103,34 +149,34 @@ function loadFontAsDataUri(fontPath) {
  * @returns {string} SVG markup
  */
 function buildSvg(layers, texts, { imageWidth, imageHeight }) {
-	// Collect @font-face declarations
-	const fontFaces = layers
-		.filter((l, i) => l.fontData && texts[i])
-		.map((l) => {
-			return `\t\t@font-face { font-family: '${escapeXml(l.font)}'; font-weight: ${l.fontWeight ?? 400}; src: url('${l.fontData}') format('${l.fontFormat ?? 'woff2'}'); }`;
-		})
-		.join('\n');
+  // Collect @font-face declarations
+  const fontFaces = layers
+    .filter((l, i) => l.fontData && texts[i])
+    .map((l) => {
+      return `\t\t@font-face { font-family: '${escapeXml(l.font)}'; font-weight: ${l.fontWeight ?? 400}; src: url('${l.fontData}') format('${l.fontFormat ?? 'woff2'}'); }`;
+    })
+    .join('\n');
 
-	// Build text element groups
-	const textMarkup = layers
-		.map((layer, i) => {
-			const text = texts[i];
-			if (!text) return '';
-			return buildTextElements(layer, text, imageHeight);
-		})
-		.filter(Boolean)
-		.join('\n');
+  // Build text element groups
+  const textMarkup = layers
+    .map((layer, i) => {
+      const text = texts[i];
+      if (!text) return '';
+      return buildTextElements(layer, text, imageHeight);
+    })
+    .filter(Boolean)
+    .join('\n');
 
-	return [
-		`<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidth}" height="${imageHeight}" overflow="hidden">`,
-		fontFaces
-			? `\t<defs>\n\t\t<style>\n${fontFaces}\n\t\t</style>\n\t</defs>`
-			: '',
-		textMarkup,
-		'</svg>',
-	]
-		.filter(Boolean)
-		.join('\n');
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${imageWidth}" height="${imageHeight}" overflow="hidden">`,
+    fontFaces
+      ? `\t<defs>\n\t\t<style>\n${fontFaces}\n\t\t</style>\n\t</defs>`
+      : '',
+    textMarkup,
+    '</svg>',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -149,11 +195,11 @@ function buildSvg(layers, texts, { imageWidth, imageHeight }) {
  * @returns {string} first 12 hex chars of the SHA-256 digest
  */
 function contentHash(texts, configSalt = '') {
-	return crypto
-		.createHash('sha256')
-		.update(texts.join('\x00') + '\x01' + configSalt)
-		.digest('hex')
-		.slice(0, 12);
+  return crypto
+    .createHash('sha256')
+    .update(texts.join('\x00') + '\x01' + configSalt)
+    .digest('hex')
+    .slice(0, 12);
 }
 
 /**
@@ -167,8 +213,8 @@ function contentHash(texts, configSalt = '') {
  * @returns {string}
  */
 function layerConfigSalt(layers) {
-	const summary = layers.map(({ fontData: _fd, ...rest }) => rest);
-	return JSON.stringify(summary);
+  const summary = layers.map(({ fontData: _fd, ...rest }) => rest);
+  return JSON.stringify(summary);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +235,7 @@ function layerConfigSalt(layers) {
  * @param {number}  [options.imageWidth]    - base image width  (default: 1280)
  * @param {number}  [options.imageHeight]   - base image height (default: 669)
  * @param {number}  [options.jpegQuality]   - output JPEG quality 1-100 (default: 90)
+ * @param {boolean} [options.verbose]       - log cache/generation events to console (default: false)
  * @param {object[]} options.layers         - text layer configs (see README for full shape)
  *
  * Each layer object supports:
@@ -207,113 +254,134 @@ function layerConfigSalt(layers) {
  *   unique slug for the output filename. Returns the public URL of the image.
  */
 export function createGenerator(options = {}) {
-	const {
-		baseImagePath,
-		outputDir,
-		outputUrlPath,
-		cacheFile = './_cache/share-cards.json',
-		imageWidth = 1280,
-		imageHeight = 669,
-		jpegQuality = 90,
-		layers = [],
-	} = options;
+  const {
+    baseImagePath,
+    outputDir,
+    outputUrlPath,
+    cacheFile = './_cache/share-cards.json',
+    imageWidth = 1280,
+    imageHeight = 669,
+    jpegQuality = 90,
+    verbose = false,
+    layers = [],
+  } = options;
 
-	if (!baseImagePath)
-		throw new Error('[share-card] options.baseImagePath is required');
-	if (!outputDir)
-		throw new Error('[share-card] options.outputDir is required');
-	if (!outputUrlPath)
-		throw new Error('[share-card] options.outputUrlPath is required');
+  const log = (...args) => {
+    if (verbose) {
+      console.log('[share-card]', ...args);
+    }
+  };
 
-	// Resolve the base image path once
-	const resolvedBaseImage = path.isAbsolute(baseImagePath)
-		? baseImagePath
-		: path.resolve(process.cwd(), baseImagePath);
+  if (!baseImagePath)
+    throw new Error('[share-card] options.baseImagePath is required');
+  if (!outputDir)
+    throw new Error('[share-card] options.outputDir is required');
+  if (!outputUrlPath)
+    throw new Error('[share-card] options.outputUrlPath is required');
 
-	// Pre-load fonts and attach them to the layer configs
-	const preparedLayers = layers.map((layer) => {
-		const fontData = loadFontAsDataUri(layer.fontPath);
-		const ext = layer.fontPath
-			? path.extname(layer.fontPath).toLowerCase().slice(1)
-			: 'woff2';
-		const fontFormat =
-			ext === 'woff2'
-				? 'woff2'
-				: ext === 'woff'
-					? 'woff'
-					: ext === 'ttf'
-						? 'truetype'
-						: ext === 'otf'
-							? 'opentype'
-							: 'woff2';
-		return { ...layer, fontData, fontFormat };
-	});
+  // Resolve the base image path once
+  const resolvedBaseImage = path.isAbsolute(baseImagePath)
+    ? baseImagePath
+    : path.resolve(process.cwd(), baseImagePath);
 
-	// Stable salt derived from layer configuration.  Any change to the layer
-	// options (font, size, positions, flags …) will produce a different salt
-	// so previously-cached images are automatically regenerated.
-	const configSalt = layerConfigSalt(preparedLayers);
+  // Pre-load fonts and attach them to the layer configs
+  const preparedLayers = layers.map((layer) => {
+    const fontData = loadFontAsDataUri(layer.fontPath);
+    const ext = layer.fontPath
+      ? path.extname(layer.fontPath).toLowerCase().slice(1)
+      : 'woff2';
+    const fontFormat =
+      ext === 'woff2'
+        ? 'woff2'
+        : ext === 'woff'
+          ? 'woff'
+          : ext === 'ttf'
+            ? 'truetype'
+            : ext === 'otf'
+              ? 'opentype'
+              : 'woff2';
+    return { ...layer, fontData, fontFormat };
+  });
 
-	// Ensure output directory exists
-	fs.mkdirSync(path.resolve(process.cwd(), outputDir), { recursive: true });
+  // Stable salt derived from layer configuration.  Any change to the layer
+  // options (font, size, positions, flags …) will produce a different salt
+  // so previously-cached images are automatically regenerated.
+  const configSalt = layerConfigSalt(preparedLayers);
 
-	/**
-	 * Generate (or return a cached) share-card image.
-	 *
-	 * @param {string[]} texts - one string per layer, in the same order as `layers`
-	 * @param {string}   slug  - unique identifier used as the output filename
-	 * @returns {Promise<string>} public URL path to the generated image (e.g. '/i/share-cards/my-post.jpg')
-	 */
-	return async function generateShareCard(texts, slug) {
-		if (!slug) {
-			console.warn(
-				'[share-card] No slug provided; skipping image generation.',
-			);
-			return '';
-		}
+  // Ensure output directory exists
+  fs.mkdirSync(path.resolve(process.cwd(), outputDir), { recursive: true });
 
-		const hash = contentHash(texts, configSalt);
-		const filename = `${slug}.jpg`;
-		const outputPath = path.resolve(process.cwd(), outputDir, filename);
-		const publicUrl = `${outputUrlPath.replace(/\/$/, '')}/${filename}`;
+  /**
+   * Generate (or return a cached) share-card image.
+   *
+   * @param {string[]} texts - one string per layer, in the same order as `layers`
+   * @param {string}   slug  - unique identifier used as the output filename
+   * @returns {Promise<string>} public URL path to the generated image (e.g. '/i/share-cards/my-post.jpg')
+   */
+  return async function generateShareCard(texts, slug) {
+    if (!slug) {
+      console.warn(
+        '[share-card] No slug provided; skipping image generation.',
+      );
+      return '';
+    }
 
-		// Check the cache — skip generation if the hash matches and the file exists
-		const cache = loadCache(cacheFile);
-		if (cache[slug]?.hash === hash && fs.existsSync(outputPath)) {
-			return publicUrl;
-		}
+    const hash = contentHash(texts, configSalt);
+    const filename = `${slug}.jpg`;
+    const outputPath = path.resolve(process.cwd(), outputDir, filename);
+    const publicUrl = `${outputUrlPath.replace(/\/$/, '')}/${filename}`;
 
-		// Generate the SVG overlay
-		const svg = buildSvg(preparedLayers, texts, {
-			imageWidth,
-			imageHeight,
-		});
+    // Check the cache under lock so parallel contexts don't clobber each other.
+    const cachedUrl = await withCacheLock(cacheFile, async (cache) => {
+      if (cache[slug]?.hash === hash && fs.existsSync(outputPath)) {
+        log(`cache hit for "${slug}"`);
+        return cache[slug].url || publicUrl;
+      }
+      log(`cache miss for "${slug}"`);
+      return '';
+    });
+    if (cachedUrl) return cachedUrl;
 
-		try {
-			await sharp(resolvedBaseImage)
-				.composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
-				.jpeg({
-					quality: jpegQuality,
-					progressive: true,
-					mozjpeg: true,
-				})
-				.toFile(outputPath);
+    // Generate the SVG overlay
+    const svg = buildSvg(preparedLayers, texts, {
+      imageWidth,
+      imageHeight,
+    });
 
-			// Update the cache
-			cache[slug] = {
-				hash,
-				url: publicUrl,
-				generated: new Date().toISOString(),
-			};
-			saveCache(cacheFile, cache);
-		} catch (err) {
-			console.error(
-				`[share-card] Failed to generate image for "${slug}":`,
-				err.message,
-			);
-			return '';
-		}
+    try {
+      log(`generating image for "${slug}"`);
+      await sharp(resolvedBaseImage)
+        .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+        .jpeg({
+          quality: jpegQuality,
+          progressive: true,
+          mozjpeg: true,
+        })
+        .toFile(outputPath);
 
-		return publicUrl;
-	};
+      // Update the cache under lock. Re-check first in case another context
+      // already generated this slug while we were rendering the image.
+      await withCacheLock(cacheFile, async (cache) => {
+        if (cache[slug]?.hash === hash && fs.existsSync(outputPath)) {
+          log(`cache already updated for "${slug}" while generating`);
+          return;
+        }
+
+        cache[slug] = {
+          hash,
+          url: publicUrl,
+        };
+        saveCache(cacheFile, cache);
+        log(`cache updated for "${slug}"`);
+      });
+    } catch (err) {
+      console.error(
+        `[share-card] Failed to generate image for "${slug}":`,
+        err.message,
+      );
+      return '';
+    }
+
+    return publicUrl;
+  };
 }
