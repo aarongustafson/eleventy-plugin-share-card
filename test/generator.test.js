@@ -3,6 +3,10 @@ import os from 'os';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const lockMock = vi.fn(async () => {
+	return async () => {};
+});
+
 const sharpToFileMock = vi.fn(async () => {});
 const sharpJpegMock = vi.fn(() => ({
 	toFile: sharpToFileMock,
@@ -20,9 +24,7 @@ vi.mock('sharp', () => ({
 
 vi.mock('proper-lockfile', () => ({
 	default: {
-		lock: vi.fn(async () => {
-			return async () => {};
-		}),
+		lock: lockMock,
 	},
 }));
 
@@ -39,6 +41,7 @@ function makeTempPaths() {
 
 describe('createGenerator', () => {
 	beforeEach(() => {
+		lockMock.mockClear();
 		sharpMock.mockClear();
 		sharpCompositeMock.mockClear();
 		sharpJpegMock.mockClear();
@@ -88,6 +91,44 @@ describe('createGenerator', () => {
 		expect(sharpMock).toHaveBeenCalledTimes(1);
 	});
 
+	it('returns build cache hit for repeated slug calls in the same build', async () => {
+		const { baseImagePath, outputDir, cacheFile } = makeTempPaths();
+		const generate = createGenerator({
+			baseImagePath,
+			outputDir,
+			outputUrlPath: '/cards',
+			cacheFile,
+			layers: [],
+		});
+
+		await generate(['My Title'], 'my-post');
+		await generate(['My Title'], 'my-post');
+
+		expect(sharpMock).toHaveBeenCalledTimes(1);
+		expect(lockMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('can disable build cache and still use file cache', async () => {
+		const { baseImagePath, outputDir, cacheFile } = makeTempPaths();
+		const generate = createGenerator({
+			baseImagePath,
+			outputDir,
+			outputUrlPath: '/cards',
+			cacheFile,
+			buildCache: false,
+			layers: [],
+		});
+
+		await generate(['My Title'], 'my-post');
+		const outputPath = path.join(outputDir, 'my-post.jpg');
+		fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+		fs.writeFileSync(outputPath, 'image');
+		await generate(['My Title'], 'my-post');
+
+		expect(sharpMock).toHaveBeenCalledTimes(1);
+		expect(lockMock).toHaveBeenCalledTimes(3);
+	});
+
 	it('logs progress when verbose is enabled', async () => {
 		const { baseImagePath, outputDir, cacheFile } = makeTempPaths();
 		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -104,7 +145,7 @@ describe('createGenerator', () => {
 
 		expect(logSpy).toHaveBeenCalledWith(
 			'[share-card]',
-			'cache miss for "my-post"',
+			'cache miss for "my-post" (generating...)',
 		);
 		expect(logSpy).toHaveBeenCalledWith(
 			'[share-card]',
@@ -113,6 +154,12 @@ describe('createGenerator', () => {
 		expect(logSpy).toHaveBeenCalledWith(
 			'[share-card]',
 			'cache updated for "my-post"',
+		);
+
+		await generate(['My Title'], 'my-post');
+		expect(logSpy).toHaveBeenCalledWith(
+			'[share-card]',
+			'build cache hit for "my-post"',
 		);
 	});
 

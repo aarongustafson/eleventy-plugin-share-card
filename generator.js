@@ -235,6 +235,7 @@ function layerConfigSalt(layers) {
  * @param {number}  [options.imageWidth]    - base image width  (default: 1280)
  * @param {number}  [options.imageHeight]   - base image height (default: 669)
  * @param {number}  [options.jpegQuality]   - output JPEG quality 1-100 (default: 90)
+ * @param {boolean} [options.buildCache]    - memoize results per slug for this generator instance (default: true)
  * @param {boolean} [options.verbose]       - log cache/generation events to console (default: false)
  * @param {object[]} options.layers         - text layer configs (see README for full shape)
  *
@@ -262,6 +263,7 @@ export function createGenerator(options = {}) {
 		imageWidth = 1280,
 		imageHeight = 669,
 		jpegQuality = 90,
+		buildCache = true,
 		verbose = false,
 		layers = [],
 	} = options;
@@ -310,6 +312,7 @@ export function createGenerator(options = {}) {
 
 	// Ensure output directory exists
 	fs.mkdirSync(path.resolve(process.cwd(), outputDir), { recursive: true });
+	const inMemoryBuildCache = buildCache ? new Map() : null;
 
 	/**
 	 * Generate (or return a cached) share-card image.
@@ -327,61 +330,93 @@ export function createGenerator(options = {}) {
 		}
 
 		const hash = contentHash(texts, configSalt);
+		if (inMemoryBuildCache && inMemoryBuildCache.has(slug)) {
+			const cachedEntry = inMemoryBuildCache.get(slug);
+			if (cachedEntry.hash === hash) {
+				log(`build cache hit for "${slug}"`);
+				return cachedEntry.promise;
+			}
+
+			// Same slug with changed content in the same build should regenerate.
+			inMemoryBuildCache.delete(slug);
+			log(`build cache invalidated for "${slug}" due to hash change`);
+		}
+
 		const filename = `${slug}.jpg`;
 		const outputPath = path.resolve(process.cwd(), outputDir, filename);
 		const publicUrl = `${outputUrlPath.replace(/\/$/, '')}/${filename}`;
 
-		// Check the cache under lock so parallel contexts don't clobber each other.
-		const cachedUrl = await withCacheLock(cacheFile, async (cache) => {
-			if (cache[slug]?.hash === hash && fs.existsSync(outputPath)) {
-				log(`cache hit for "${slug}"`);
-				return cache[slug].url || publicUrl;
-			}
-			log(`cache miss for "${slug}"`);
-			return '';
-		});
-		if (cachedUrl) return cachedUrl;
-
-		// Generate the SVG overlay
-		const svg = buildSvg(preparedLayers, texts, {
-			imageWidth,
-			imageHeight,
-		});
-
-		try {
-			log(`generating image for "${slug}"`);
-			await sharp(resolvedBaseImage)
-				.composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
-				.jpeg({
-					quality: jpegQuality,
-					progressive: true,
-					mozjpeg: true,
-				})
-				.toFile(outputPath);
-
-			// Update the cache under lock. Re-check first in case another context
-			// already generated this slug while we were rendering the image.
-			await withCacheLock(cacheFile, async (cache) => {
+		const generationPromise = (async () => {
+			// Check the cache under lock so parallel contexts don't clobber each other.
+			const cachedUrl = await withCacheLock(cacheFile, async (cache) => {
 				if (cache[slug]?.hash === hash && fs.existsSync(outputPath)) {
-					log(`cache already updated for "${slug}" while generating`);
-					return;
+					log(`file cache hit for "${slug}"`);
+					return cache[slug].url || publicUrl;
 				}
-
-				cache[slug] = {
-					hash,
-					url: publicUrl,
-				};
-				saveCache(cacheFile, cache);
-				log(`cache updated for "${slug}"`);
+				log(`cache miss for "${slug}" (generating...)`);
+				return '';
 			});
-		} catch (err) {
-			console.error(
-				`[share-card] Failed to generate image for "${slug}":`,
-				err.message,
-			);
-			return '';
+			if (cachedUrl) return cachedUrl;
+
+			// Generate the SVG overlay
+			const svg = buildSvg(preparedLayers, texts, {
+				imageWidth,
+				imageHeight,
+			});
+
+			try {
+				log(`generating image for "${slug}"`);
+				await sharp(resolvedBaseImage)
+					.composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+					.jpeg({
+						quality: jpegQuality,
+						progressive: true,
+						mozjpeg: true,
+					})
+					.toFile(outputPath);
+
+				// Update the cache under lock. Re-check first in case another context
+				// already generated this slug while we were rendering the image.
+				await withCacheLock(cacheFile, async (cache) => {
+					if (
+						cache[slug]?.hash === hash &&
+						fs.existsSync(outputPath)
+					) {
+						log(
+							`cache already updated for "${slug}" while generating`,
+						);
+						return;
+					}
+
+					cache[slug] = {
+						hash,
+						url: publicUrl,
+					};
+					saveCache(cacheFile, cache);
+					log(`cache updated for "${slug}"`);
+				});
+				log(`generated: ${slug} -> ${publicUrl}`);
+			} catch (err) {
+				console.error(
+					`[share-card] Failed to generate image for "${slug}":`,
+					err.message,
+				);
+				return '';
+			}
+
+			return publicUrl;
+		})();
+
+		if (inMemoryBuildCache) {
+			inMemoryBuildCache.set(slug, { hash, promise: generationPromise });
 		}
 
-		return publicUrl;
+		const result = await generationPromise;
+		if (!result && inMemoryBuildCache) {
+			// Retry on later calls if this attempt failed.
+			inMemoryBuildCache.delete(slug);
+		}
+
+		return result;
 	};
 }

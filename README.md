@@ -120,6 +120,7 @@ export default {
 | `outputDir` | `string` | ✅ | — | Directory where generated share-card images are written. Created automatically if missing. |
 | `outputUrlPath` | `string` | ✅ | — | URL prefix returned in the generated image path (e.g. `"/i/share-cards"`). |
 | `cacheFile` | `string` | | `./_cache/share-cards.json` | Path to the JSON cache file. |
+| `buildCache` | `boolean` | | `true` | Build-scoped in-memory memoization keyed by slug. Prevents duplicate generator work when the same item is accessed multiple times during one build. |
 | `verbose` | `boolean` | | `false` | Logs cache hits/misses and generation progress to the console. |
 | `imageWidth` | `number` | | `1280` | Width of `baseImagePath` in pixels (used for SVG canvas size). |
 | `imageHeight` | `number` | | `669` | Height of `baseImagePath` in pixels. |
@@ -160,7 +161,12 @@ generateShareCard(texts: string[], slug: string): Promise<string>
 
 ## Caching
 
-Generated images are cached by slug. On each build the generator:
+Generated images are cached in two layers by slug:
+
+1. Build cache (in-memory, enabled by default): returns the same promise for repeated calls during one build.
+2. File cache (`cacheFile`): persists across builds and skips generation when the hash and output file still match.
+
+On each cache miss the generator:
 
 1. Computes a SHA-256 hash of all text strings for that image.
 2. Looks up the slug in `cacheFile`.
@@ -168,6 +174,12 @@ Generated images are cached by slug. On each build the generator:
 4. Otherwise → generates the image, writes the file, and updates the cache.
 
 This means only posts whose titles or tags have changed (or new posts) will trigger image generation on incremental builds.
+
+With `verbose: true`, logs show cache source so you can verify behavior:
+
+- `build cache hit for "slug"`
+- `file cache hit for "slug"`
+- `cache miss for "slug" (generating...)`
 
 ### Netlify / CI
 
