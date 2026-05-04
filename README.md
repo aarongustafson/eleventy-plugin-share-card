@@ -125,6 +125,70 @@ export default {
 };
 ```
 
+**Important:** Use a regular function expression or declaration, not an arrow function. Arrow functions do not have Eleventy's dynamic `this` binding:
+
+```js
+// ✅ Correct — this is bound to Eleventy's context
+image: async function (data) { return this.generateShareCard(...); }
+
+// ❌ Incorrect — this does not reference Eleventy's context
+image: async (data) => { return this.generateShareCard(...); }  // `this` is undefined
+```
+
+### Alternative: avoid `this` by importing the generator directly
+
+If you prefer to avoid relying on `this` binding, you can store the generator in a shared module:
+
+```js
+// src/_includes/lib/share-card.js
+import { createGenerator } from "eleventy-plugin-share-card";
+
+let generateShareCard;
+
+export function initShareCardGenerator(eleventyConfig, options) {
+  generateShareCard = createGenerator(options, eleventyConfig);
+}
+
+export function getShareCardGenerator() {
+  return generateShareCard;
+}
+```
+
+Then initialize it in `.eleventy.js`:
+
+```js
+import { initShareCardGenerator } from './src/_includes/lib/share-card.js';
+
+export default (eleventyConfig) => {
+  initShareCardGenerator(eleventyConfig, {
+    baseImagePath: "./src/_images/share-card.jpg",
+    outputDir:     "./src/static/i/share-cards",
+    outputUrlPath: "/i/share-cards",
+    verbose:       true,
+    layers: [ /* ... */ ],
+  });
+};
+```
+
+And call it from your data file:
+
+```js
+import { getShareCardGenerator } from './_includes/lib/share-card.js';
+
+export default {
+  eleventyComputed: {
+    image: async (data) => {
+      if (data.hero) return `${data.site.url}${data.hero.src}`;
+      const generateShareCard = getShareCardGenerator();
+      return generateShareCard(
+        [data.title, myTagsToHashtags(data.tags)],
+        data.page.fileSlug,
+      );
+    },
+  },
+};
+```
+
 ---
 
 ## Options reference
