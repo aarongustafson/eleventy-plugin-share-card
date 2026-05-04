@@ -224,8 +224,9 @@ function layerConfigSalt(layers) {
 /**
  * Create a share-card generator function bound to a specific configuration.
  *
- * Call this once (e.g. inside your Eleventy config or a data file) and re-use
- * the returned async function for every post/page.
+ * Create this once inside your Eleventy config (`.eleventy.js`) and expose the
+ * returned function to data files via `eleventyConfig.addJavaScriptFunction()`
+ * — data files do not have access to `eleventyConfig` directly.
  *
  * Every call to the returned function is queued (last write wins per slug) so
  * that images are generated exactly once per slug at the end of the build via
@@ -342,29 +343,29 @@ export function createGenerator(options = {}, eleventyConfig) {
 	 * @returns {Promise<string>}
 	 */
 	async function generateImage(texts, slug) {
-		const hash = contentHash(texts, configSalt);
-		const filename = `${slug}.jpg`;
-		const outputPath = path.resolve(process.cwd(), outputDir, filename);
-		const publicUrl = `${outputUrlPath.replace(/\/$/, '')}/${filename}`;
-
-		// Check the file cache under lock so parallel contexts don't clobber each other.
-		const cachedUrl = await withCacheLock(cacheFile, async (cache) => {
-			if (cache[slug]?.hash === hash && fs.existsSync(outputPath)) {
-				log(`file cache hit for "${slug}"`);
-				return cache[slug].url || publicUrl;
-			}
-			log(`cache miss for "${slug}" (generating...)`);
-			return '';
-		});
-		if (cachedUrl) return cachedUrl;
-
-		// Generate the SVG overlay
-		const svg = buildSvg(preparedLayers, texts, {
-			imageWidth,
-			imageHeight,
-		});
-
 		try {
+			const hash = contentHash(texts, configSalt);
+			const filename = `${slug}.jpg`;
+			const outputPath = path.resolve(process.cwd(), outputDir, filename);
+			const publicUrl = `${outputUrlPath.replace(/\/$/, '')}/${filename}`;
+
+			// Check the file cache under lock so parallel contexts don't clobber each other.
+			const cachedUrl = await withCacheLock(cacheFile, async (cache) => {
+				if (cache[slug]?.hash === hash && fs.existsSync(outputPath)) {
+					log(`file cache hit for "${slug}"`);
+					return cache[slug].url || publicUrl;
+				}
+				log(`cache miss for "${slug}" (generating...)`);
+				return '';
+			});
+			if (cachedUrl) return cachedUrl;
+
+			// Generate the SVG overlay
+			const svg = buildSvg(preparedLayers, texts, {
+				imageWidth,
+				imageHeight,
+			});
+
 			log(`generating image for "${slug}"`);
 			await sharp(resolvedBaseImage)
 				.composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
@@ -391,6 +392,7 @@ export function createGenerator(options = {}, eleventyConfig) {
 				log(`cache updated for "${slug}"`);
 			});
 			log(`generated: ${slug} -> ${publicUrl}`);
+			return publicUrl;
 		} catch (err) {
 			console.error(
 				`[share-card] Failed to generate image for "${slug}":`,
@@ -398,8 +400,6 @@ export function createGenerator(options = {}, eleventyConfig) {
 			);
 			return '';
 		}
-
-		return publicUrl;
 	}
 
 	// ---------------------------------------------------------------------------
@@ -411,14 +411,18 @@ export function createGenerator(options = {}, eleventyConfig) {
 
 		log(`flushing ${buildQueue.size} queued share-card(s)...`);
 
-		// Snapshot and clear the queue before processing so that any new
-		// calls queued during the flush (unlikely but possible) start a
-		// fresh queue for the next build cycle.
-		const entries = [...buildQueue];
-		buildQueue.clear();
-
-		for (const [slug, texts] of entries) {
-			await generateImage(texts, slug);
+		// Snapshot the current keys so any entries added DURING the flush
+		// (unlikely but possible) are deferred to the next build cycle.
+		// Each slug is deleted from the queue only after a successful
+		// generateImage() call, so failures are automatically retried on
+		// the next eleventy.after invocation (e.g. in watch mode).
+		const slugs = [...buildQueue.keys()];
+		for (const slug of slugs) {
+			const texts = buildQueue.get(slug);
+			const result = await generateImage(texts, slug);
+			if (result) {
+				buildQueue.delete(slug);
+			}
 		}
 	});
 

@@ -354,4 +354,41 @@ describe('createGenerator', () => {
 			'generated: my-post -> /cards/my-post.jpg',
 		);
 	});
+
+	it('retries a failed slug on the next eleventy.after (watch mode)', async () => {
+		const { baseImagePath, outputDir, cacheFile } = makeTempPaths();
+		const eleventyConfig = makeEleventyConfigMock();
+		const errorSpy = vi
+			.spyOn(console, 'error')
+			.mockImplementation(() => {});
+
+		const generate = createGenerator(
+			{
+				baseImagePath,
+				outputDir,
+				outputUrlPath: '/cards',
+				cacheFile,
+				layers: [],
+			},
+			eleventyConfig,
+		);
+
+		await generate(['My Title'], 'my-post');
+
+		// Make sharp fail on the first flush
+		sharpToFileMock.mockRejectedValueOnce(new Error('disk full'));
+
+		await eleventyConfig.emit('eleventy.after');
+
+		// sharp was called once but failed — slug stays in the queue
+		expect(sharpMock).toHaveBeenCalledTimes(1);
+		expect(errorSpy).toHaveBeenCalledTimes(1);
+
+		// Second build cycle: template re-queues the slug (last-write-wins)
+		await generate(['My Title'], 'my-post');
+
+		// This time sharp succeeds
+		await eleventyConfig.emit('eleventy.after');
+		expect(sharpMock).toHaveBeenCalledTimes(2);
+	});
 });

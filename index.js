@@ -14,10 +14,14 @@
  *
  * 2. As a standalone generator factory (ideal for eleventyComputed data files):
  *
+ *    // .eleventy.js
  *    import { createGenerator } from 'eleventy-plugin-share-card';
- *    const generateShareCard = createGenerator(options);
- *    // later:
- *    const imageUrl = await generateShareCard(['My Title', '#tag1 #tag2'], 'my-post-slug');
+ *    export default (eleventyConfig) => {
+ *      const generateShareCard = createGenerator(options, eleventyConfig);
+ *      eleventyConfig.addJavaScriptFunction('generateShareCard', generateShareCard);
+ *    };
+ *    // later in a data file via `this.generateShareCard(...)`:
+ *    const imageUrl = await this.generateShareCard(['My Title', '#tag1 #tag2'], 'my-post-slug');
  *
  * See README.md for the full options reference and worked examples.
  */
