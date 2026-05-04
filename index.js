@@ -35,7 +35,7 @@ import { createGenerator } from './generator.js';
  * @param {object} options - same options object accepted by createGenerator()
  */
 export default function shareCardPlugin(eleventyConfig, options = {}) {
-	const generate = createGenerator(options);
+	const generate = createGenerator(options, eleventyConfig);
 
 	/**
 	 * Universal async filter: `shareCard`
