@@ -224,8 +224,16 @@ function layerConfigSalt(layers) {
 /**
  * Create a share-card generator function bound to a specific configuration.
  *
- * Call this once (at module level in a data file) and re-use the returned
- * async function for every post/page.
+ * Create this once inside your Eleventy config (`.eleventy.js`) and expose the
+ * returned function to data files via `eleventyConfig.addJavaScriptFunction()`
+ * — data files do not have access to `eleventyConfig` directly.
+ *
+ * Every call to the returned function is queued (last write wins per slug) so
+ * that images are generated exactly once per slug at the end of the build via
+ * Eleventy's `eleventy.after` event.  This prevents the redundant
+ * double-generation that occurs because Eleventy re-evaluates `eleventyComputed`
+ * properties on every collection access — sometimes with incomplete data on the
+ * first pass.
  *
  * @param {object} options
  * @param {string}   options.baseImagePath  - path to the template JPEG/PNG
@@ -235,9 +243,10 @@ function layerConfigSalt(layers) {
  * @param {number}  [options.imageWidth]    - base image width  (default: 1280)
  * @param {number}  [options.imageHeight]   - base image height (default: 669)
  * @param {number}  [options.jpegQuality]   - output JPEG quality 1-100 (default: 90)
- * @param {boolean} [options.buildCache]    - memoize results per slug for this generator instance (default: true)
  * @param {boolean} [options.verbose]       - log cache/generation events to console (default: false)
  * @param {object[]} options.layers         - text layer configs (see README for full shape)
+ * @param {object}   eleventyConfig         - Eleventy UserConfig object (required); used to
+ *                                           register the `eleventy.after` flush handler
  *
  * Each layer object supports:
  * @param {string}  layer.font        - CSS font-family name
@@ -254,7 +263,7 @@ function layerConfigSalt(layers) {
  *   Async function that accepts an array of text strings (one per layer) and a
  *   unique slug for the output filename. Returns the public URL of the image.
  */
-export function createGenerator(options = {}) {
+export function createGenerator(options = {}, eleventyConfig) {
 	const {
 		baseImagePath,
 		outputDir,
@@ -263,7 +272,6 @@ export function createGenerator(options = {}) {
 		imageWidth = 1280,
 		imageHeight = 669,
 		jpegQuality = 90,
-		buildCache = true,
 		verbose = false,
 		layers = [],
 	} = options;
@@ -280,6 +288,10 @@ export function createGenerator(options = {}) {
 		throw new Error('[share-card] options.outputDir is required');
 	if (!outputUrlPath)
 		throw new Error('[share-card] options.outputUrlPath is required');
+	if (!eleventyConfig || typeof eleventyConfig.on !== 'function')
+		throw new Error(
+			'[share-card] eleventyConfig is required. Pass the Eleventy UserConfig object as the second argument to createGenerator().',
+		);
 
 	// Resolve the base image path once
 	const resolvedBaseImage = path.isAbsolute(baseImagePath)
@@ -312,42 +324,32 @@ export function createGenerator(options = {}) {
 
 	// Ensure output directory exists
 	fs.mkdirSync(path.resolve(process.cwd(), outputDir), { recursive: true });
-	const inMemoryBuildCache = buildCache ? new Map() : null;
+
+	// slug → texts (most recent call wins).
+	// Populated during the build; flushed once in the eleventy.after handler.
+	const buildQueue = new Map();
+
+	// ---------------------------------------------------------------------------
+	// Core generation logic
+	// ---------------------------------------------------------------------------
 
 	/**
-	 * Generate (or return a cached) share-card image.
+	 * Generate one share-card image (or return a cached URL).
+	 * This function always generates immediately — callers are responsible for
+	 * any deduplication / queueing that should happen before this is invoked.
 	 *
-	 * @param {string[]} texts - one string per layer, in the same order as `layers`
-	 * @param {string}   slug  - unique identifier used as the output filename
-	 * @returns {Promise<string>} public URL path to the generated image (e.g. '/i/share-cards/my-post.jpg')
+	 * @param {string[]} texts
+	 * @param {string}   slug
+	 * @returns {Promise<string>}
 	 */
-	return async function generateShareCard(texts, slug) {
-		if (!slug) {
-			console.warn(
-				'[share-card] No slug provided; skipping image generation.',
-			);
-			return '';
-		}
+	async function generateImage(texts, slug) {
+		try {
+			const hash = contentHash(texts, configSalt);
+			const filename = `${slug}.jpg`;
+			const outputPath = path.resolve(process.cwd(), outputDir, filename);
+			const publicUrl = `${outputUrlPath.replace(/\/$/, '')}/${filename}`;
 
-		const hash = contentHash(texts, configSalt);
-		if (inMemoryBuildCache && inMemoryBuildCache.has(slug)) {
-			const cachedEntry = inMemoryBuildCache.get(slug);
-			if (cachedEntry.hash === hash) {
-				log(`build cache hit for "${slug}"`);
-				return cachedEntry.promise;
-			}
-
-			// Same slug with changed content in the same build should regenerate.
-			inMemoryBuildCache.delete(slug);
-			log(`build cache invalidated for "${slug}" due to hash change`);
-		}
-
-		const filename = `${slug}.jpg`;
-		const outputPath = path.resolve(process.cwd(), outputDir, filename);
-		const publicUrl = `${outputUrlPath.replace(/\/$/, '')}/${filename}`;
-
-		const generationPromise = (async () => {
-			// Check the cache under lock so parallel contexts don't clobber each other.
+			// Check the file cache under lock so parallel contexts don't clobber each other.
 			const cachedUrl = await withCacheLock(cacheFile, async (cache) => {
 				if (cache[slug]?.hash === hash && fs.existsSync(outputPath)) {
 					log(`file cache hit for "${slug}"`);
@@ -364,59 +366,98 @@ export function createGenerator(options = {}) {
 				imageHeight,
 			});
 
-			try {
-				log(`generating image for "${slug}"`);
-				await sharp(resolvedBaseImage)
-					.composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
-					.jpeg({
-						quality: jpegQuality,
-						progressive: true,
-						mozjpeg: true,
-					})
-					.toFile(outputPath);
+			log(`generating image for "${slug}"`);
+			await sharp(resolvedBaseImage)
+				.composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+				.jpeg({
+					quality: jpegQuality,
+					progressive: true,
+					mozjpeg: true,
+				})
+				.toFile(outputPath);
 
-				// Update the cache under lock. Re-check first in case another context
-				// already generated this slug while we were rendering the image.
-				await withCacheLock(cacheFile, async (cache) => {
-					if (
-						cache[slug]?.hash === hash &&
-						fs.existsSync(outputPath)
-					) {
-						log(
-							`cache already updated for "${slug}" while generating`,
-						);
-						return;
-					}
+			// Update the cache under lock. Re-check first in case another context
+			// already generated this slug while we were rendering the image.
+			await withCacheLock(cacheFile, async (cache) => {
+				if (cache[slug]?.hash === hash && fs.existsSync(outputPath)) {
+					log(`cache already updated for "${slug}" while generating`);
+					return;
+				}
 
-					cache[slug] = {
-						hash,
-						url: publicUrl,
-					};
-					saveCache(cacheFile, cache);
-					log(`cache updated for "${slug}"`);
-				});
-				log(`generated: ${slug} -> ${publicUrl}`);
-			} catch (err) {
-				console.error(
-					`[share-card] Failed to generate image for "${slug}":`,
-					err.message,
-				);
-				return '';
-			}
-
+				cache[slug] = {
+					hash,
+					url: publicUrl,
+				};
+				saveCache(cacheFile, cache);
+				log(`cache updated for "${slug}"`);
+			});
+			log(`generated: ${slug} -> ${publicUrl}`);
 			return publicUrl;
-		})();
+		} catch (err) {
+			console.error(
+				`[share-card] Failed to generate image for "${slug}":`,
+				err.message,
+			);
+			return '';
+		}
+	}
 
-		if (inMemoryBuildCache) {
-			inMemoryBuildCache.set(slug, { hash, promise: generationPromise });
+	// ---------------------------------------------------------------------------
+	// Register eleventy.after hook to flush the build queue once per build
+	// ---------------------------------------------------------------------------
+
+	eleventyConfig.on('eleventy.after', async () => {
+		if (buildQueue.size === 0) return;
+
+		log(`flushing ${buildQueue.size} queued share-card(s)...`);
+
+		// Snapshot the current keys so any entries added DURING the flush
+		// (unlikely but possible) are deferred to the next build cycle.
+		// Each slug is deleted from the queue only after a successful
+		// generateImage() call, so failures are automatically retried on
+		// the next eleventy.after invocation (e.g. in watch mode).
+		const slugs = [...buildQueue.keys()];
+		for (const slug of slugs) {
+			const texts = buildQueue.get(slug);
+			const result = await generateImage(texts, slug);
+			if (result) {
+				buildQueue.delete(slug);
+			}
+		}
+	});
+
+	// ---------------------------------------------------------------------------
+	// Returned generator function
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Queue a share-card image for generation at the end of the build.
+	 *
+	 * Each call stores the most recent texts for the given slug.  When the same
+	 * slug is called multiple times during a build (because Eleventy re-evaluates
+	 * `eleventyComputed` properties for every collection access), only the last
+	 * call's data is used — ensuring the image is always generated with the most
+	 * complete data.  The pre-computed URL is returned immediately so template
+	 * rendering can continue; the image file itself is written by the
+	 * `eleventy.after` handler registered above.
+	 *
+	 * @param {string[]} texts - one string per layer, in the same order as `layers`
+	 * @param {string}   slug  - unique identifier used as the output filename
+	 * @returns {Promise<string>} public URL path to the generated image (e.g. '/i/share-cards/my-post.jpg')
+	 */
+	return async function generateShareCard(texts, slug) {
+		if (!slug) {
+			console.warn(
+				'[share-card] No slug provided; skipping image generation.',
+			);
+			return '';
 		}
 
-		const result = await generationPromise;
-		if (!result && inMemoryBuildCache) {
-			// Retry on later calls if this attempt failed.
-			inMemoryBuildCache.delete(slug);
-		}
+		const filename = `${slug}.jpg`;
+		const publicUrl = `${outputUrlPath.replace(/\/$/, '')}/${filename}`;
 
-		return result;
+		buildQueue.set(slug, texts);
+		log(`queued share-card for "${slug}"`);
+		return publicUrl;
 	};
 }

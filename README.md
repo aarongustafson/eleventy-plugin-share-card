@@ -77,29 +77,46 @@ export default (eleventyConfig) => {
 
 This is the recommended pattern for data files because it gives you full control over which text goes into each layer.
 
+The generator uses **deferred generation**: every call is queued (most-recent data wins per slug) and images are generated once in a single `eleventy.after` pass at the end of the build. This prevents the redundant double-generation that occurs because Eleventy re-evaluates `eleventyComputed` properties on every collection access — sometimes with incomplete data on the first pass.
+
+Create the generator inside your Eleventy config and register it as a JavaScript template function so data files can invoke it via `this`:
+
 ```js
-// src/posts/posts.11tydata.js
+// .eleventy.js
 import { createGenerator } from "eleventy-plugin-share-card";
 
-const generateShareCard = createGenerator({
-  baseImagePath: "./src/_images/share-card.jpg",
-  outputDir:     "./src/static/i/share-cards",
-  outputUrlPath: "/i/share-cards",
-  verbose:       true,
-  layers: [
-    { font: "Source Serif 4", fontPath: "...", fontSize: 72, fontWeight: 700,
-      color: "#2C2825", x: 480, y: { from: "bottom", value: 205 }, maxWidth: 760, lineSpacing: -18 },
-    { font: "Open Sans",      fontPath: "...", fontSize: 36, fontWeight: 300,
-      color: "#505050", x: 480, y: { from: "top",    value: 505 }, maxWidth: 760, lineSpacing: -5  },
-  ],
-});
+export default (eleventyConfig) => {
+  const generateShareCard = createGenerator(
+    {
+      baseImagePath: "./src/_images/share-card.jpg",
+      outputDir:     "./src/static/i/share-cards",
+      outputUrlPath: "/i/share-cards",
+      verbose:       true,
+      layers: [
+        { font: "Source Serif 4", fontPath: "...", fontSize: 72, fontWeight: 700,
+          color: "#2C2825", x: 480, y: { from: "bottom", value: 205 }, maxWidth: 760, lineSpacing: -18 },
+        { font: "Open Sans",      fontPath: "...", fontSize: 36, fontWeight: 300,
+          color: "#505050", x: 480, y: { from: "top",    value: 505 }, maxWidth: 760, lineSpacing: -5  },
+      ],
+    },
+    eleventyConfig,    // required — registers the eleventy.after flush hook
+  );
 
+  // Expose the generator as a callable JavaScript template function so that
+  // eleventyComputed data files can invoke it via `this.generateShareCard(…)`.
+  // See https://www.11ty.dev/docs/languages/javascript/#javascript-template-functions
+  eleventyConfig.addJavaScriptFunction("generateShareCard", generateShareCard);
+};
+```
+
+```js
+// src/posts/posts.11tydata.js
 export default {
   eleventyComputed: {
-    image: async (data) => {
+    image: async function (data) {
       if (data.hero) return `${data.site.url}${data.hero.src}`;
-      // Pass texts in layer order, then a unique slug for the filename
-      return generateShareCard(
+      // `this.generateShareCard` is the function registered above
+      return this.generateShareCard(
         [data.title, myTagsToHashtags(data.tags)],
         data.page.fileSlug,
       );
@@ -112,6 +129,14 @@ export default {
 
 ## Options reference
 
+### `createGenerator(options, eleventyConfig)`
+
+`options` is the same object as the top-level plugin options above.
+
+`eleventyConfig` is the Eleventy `UserConfig` object (**required**).  It is
+used to register the `eleventy.after` listener that flushes the generation
+queue at the end of the build.
+
 ### Top-level options
 
 | Option | Type | Required | Default | Description |
@@ -120,7 +145,6 @@ export default {
 | `outputDir` | `string` | ✅ | — | Directory where generated share-card images are written. Created automatically if missing. |
 | `outputUrlPath` | `string` | ✅ | — | URL prefix returned in the generated image path (e.g. `"/i/share-cards"`). |
 | `cacheFile` | `string` | | `./_cache/share-cards.json` | Path to the JSON cache file. |
-| `buildCache` | `boolean` | | `true` | Build-scoped in-memory memoization keyed by slug. Prevents duplicate generator work when the same item is accessed multiple times during one build. |
 | `verbose` | `boolean` | | `false` | Logs cache hits/misses and generation progress to the console. |
 | `imageWidth` | `number` | | `1280` | Width of `baseImagePath` in pixels (used for SVG canvas size). |
 | `imageHeight` | `number` | | `669` | Height of `baseImagePath` in pixels. |
@@ -163,8 +187,15 @@ generateShareCard(texts: string[], slug: string): Promise<string>
 
 Generated images are cached in two layers by slug:
 
-1. Build cache (in-memory, enabled by default): returns the same promise for repeated calls during one build.
-2. File cache (`cacheFile`): persists across builds and skips generation when the hash and output file still match.
+1. **Build queue** (per build): every `generateShareCard()` call is queued
+   instead of executed immediately.  When the same slug is queued multiple
+   times (because Eleventy re-evaluates `eleventyComputed` properties for each
+   collection access), only the **last** call's data is used — ensuring the
+   image is always generated with the most complete data.  The actual image
+   generation happens once per slug in the `eleventy.after` event at the end
+   of the build.
+2. **File cache** (`cacheFile`): persists across builds and skips generation
+   when the hash and output file still match.
 
 On each cache miss the generator:
 
@@ -177,7 +208,8 @@ This means only posts whose titles or tags have changed (or new posts) will trig
 
 With `verbose: true`, logs show cache source so you can verify behavior:
 
-- `build cache hit for "slug"`
+- `queued share-card for "slug"` *(call accepted into queue)*
+- `flushing N queued share-card(s)...` *(eleventy.after flush start)*
 - `file cache hit for "slug"`
 - `cache miss for "slug" (generating...)`
 
