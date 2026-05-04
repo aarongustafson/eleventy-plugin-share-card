@@ -224,19 +224,15 @@ function layerConfigSalt(layers) {
 /**
  * Create a share-card generator function bound to a specific configuration.
  *
- * Call this once (at module level in a data file) and re-use the returned
- * async function for every post/page.
+ * Call this once (e.g. inside your Eleventy config or a data file) and re-use
+ * the returned async function for every post/page.
  *
- * When `eleventyConfig` is supplied the generator switches to **deferred
- * mode**: every call is queued (last write wins per slug) and actual image
- * generation is batched into a single `eleventy.after` pass at the end of
- * the build.  This prevents the double-generation that occurs because
- * Eleventy re-evaluates `eleventyComputed` properties on every collection
- * access, sometimes with incomplete data on the first pass.
- *
- * Without `eleventyConfig` the generator falls back to **immediate mode**
- * (the original behaviour), which is still suitable for non-Eleventy usage
- * or for cases where the caller cannot supply the config object.
+ * Every call to the returned function is queued (last write wins per slug) so
+ * that images are generated exactly once per slug at the end of the build via
+ * Eleventy's `eleventy.after` event.  This prevents the redundant
+ * double-generation that occurs because Eleventy re-evaluates `eleventyComputed`
+ * properties on every collection access — sometimes with incomplete data on the
+ * first pass.
  *
  * @param {object} options
  * @param {string}   options.baseImagePath  - path to the template JPEG/PNG
@@ -246,11 +242,10 @@ function layerConfigSalt(layers) {
  * @param {number}  [options.imageWidth]    - base image width  (default: 1280)
  * @param {number}  [options.imageHeight]   - base image height (default: 669)
  * @param {number}  [options.jpegQuality]   - output JPEG quality 1-100 (default: 90)
- * @param {boolean} [options.buildCache]    - memoize results per slug for this generator instance (default: true)
  * @param {boolean} [options.verbose]       - log cache/generation events to console (default: false)
  * @param {object[]} options.layers         - text layer configs (see README for full shape)
- * @param {object|null} [eleventyConfig]    - Eleventy UserConfig object; when provided enables
- *                                           deferred generation via the `eleventy.after` event
+ * @param {object}   eleventyConfig         - Eleventy UserConfig object (required); used to
+ *                                           register the `eleventy.after` flush handler
  *
  * Each layer object supports:
  * @param {string}  layer.font        - CSS font-family name
@@ -267,7 +262,7 @@ function layerConfigSalt(layers) {
  *   Async function that accepts an array of text strings (one per layer) and a
  *   unique slug for the output filename. Returns the public URL of the image.
  */
-export function createGenerator(options = {}, eleventyConfig = null) {
+export function createGenerator(options = {}, eleventyConfig) {
 	const {
 		baseImagePath,
 		outputDir,
@@ -276,7 +271,6 @@ export function createGenerator(options = {}, eleventyConfig = null) {
 		imageWidth = 1280,
 		imageHeight = 669,
 		jpegQuality = 90,
-		buildCache = true,
 		verbose = false,
 		layers = [],
 	} = options;
@@ -293,6 +287,10 @@ export function createGenerator(options = {}, eleventyConfig = null) {
 		throw new Error('[share-card] options.outputDir is required');
 	if (!outputUrlPath)
 		throw new Error('[share-card] options.outputUrlPath is required');
+	if (!eleventyConfig || typeof eleventyConfig.on !== 'function')
+		throw new Error(
+			'[share-card] eleventyConfig is required. Pass the Eleventy UserConfig object as the second argument to createGenerator().',
+		);
 
 	// Resolve the base image path once
 	const resolvedBaseImage = path.isAbsolute(baseImagePath)
@@ -326,15 +324,12 @@ export function createGenerator(options = {}, eleventyConfig = null) {
 	// Ensure output directory exists
 	fs.mkdirSync(path.resolve(process.cwd(), outputDir), { recursive: true });
 
-	// In-memory build cache used only in immediate mode (no eleventyConfig).
-	const inMemoryBuildCache = buildCache ? new Map() : null;
-
-	// Deferred mode: slug → texts (most recent call wins).
+	// slug → texts (most recent call wins).
 	// Populated during the build; flushed once in the eleventy.after handler.
 	const buildQueue = new Map();
 
 	// ---------------------------------------------------------------------------
-	// Core generation logic (shared by both immediate and deferred modes)
+	// Core generation logic
 	// ---------------------------------------------------------------------------
 
 	/**
@@ -408,33 +403,39 @@ export function createGenerator(options = {}, eleventyConfig = null) {
 	}
 
 	// ---------------------------------------------------------------------------
-	// Deferred mode: register eleventy.after hook to flush the build queue once
+	// Register eleventy.after hook to flush the build queue once per build
 	// ---------------------------------------------------------------------------
 
-	if (eleventyConfig && typeof eleventyConfig.on === 'function') {
-		eleventyConfig.on('eleventy.after', async () => {
-			if (buildQueue.size === 0) return;
+	eleventyConfig.on('eleventy.after', async () => {
+		if (buildQueue.size === 0) return;
 
-			log(`flushing ${buildQueue.size} queued share-card(s)...`);
+		log(`flushing ${buildQueue.size} queued share-card(s)...`);
 
-			// Snapshot and clear the queue before processing so that any new
-			// calls queued during the flush (unlikely but possible) start a
-			// fresh queue for the next build cycle.
-			const entries = [...buildQueue];
-			buildQueue.clear();
+		// Snapshot and clear the queue before processing so that any new
+		// calls queued during the flush (unlikely but possible) start a
+		// fresh queue for the next build cycle.
+		const entries = [...buildQueue];
+		buildQueue.clear();
 
-			for (const [slug, texts] of entries) {
-				await generateImage(texts, slug);
-			}
-		});
-	}
+		for (const [slug, texts] of entries) {
+			await generateImage(texts, slug);
+		}
+	});
 
 	// ---------------------------------------------------------------------------
 	// Returned generator function
 	// ---------------------------------------------------------------------------
 
 	/**
-	 * Generate (or queue) a share-card image.
+	 * Queue a share-card image for generation at the end of the build.
+	 *
+	 * Each call stores the most recent texts for the given slug.  When the same
+	 * slug is called multiple times during a build (because Eleventy re-evaluates
+	 * `eleventyComputed` properties for every collection access), only the last
+	 * call's data is used — ensuring the image is always generated with the most
+	 * complete data.  The pre-computed URL is returned immediately so template
+	 * rendering can continue; the image file itself is written by the
+	 * `eleventy.after` handler registered above.
 	 *
 	 * @param {string[]} texts - one string per layer, in the same order as `layers`
 	 * @param {string}   slug  - unique identifier used as the output filename
@@ -451,49 +452,8 @@ export function createGenerator(options = {}, eleventyConfig = null) {
 		const filename = `${slug}.jpg`;
 		const publicUrl = `${outputUrlPath.replace(/\/$/, '')}/${filename}`;
 
-		// ------------------------------------------------------------------
-		// Deferred mode (eleventyConfig provided)
-		// ------------------------------------------------------------------
-		// Queue this call so that only the *last* invocation per slug is
-		// actually rendered — later calls always have more complete data
-		// (e.g. fully evaluated tags) than early calls made while Eleventy
-		// is still resolving other computed properties.  The pre-computed
-		// URL is returned immediately so template rendering can proceed;
-		// the image file itself is written by the eleventy.after handler.
-		if (eleventyConfig) {
-			buildQueue.set(slug, texts);
-			log(`queued share-card for "${slug}"`);
-			return publicUrl;
-		}
-
-		// ------------------------------------------------------------------
-		// Immediate mode (no eleventyConfig)
-		// ------------------------------------------------------------------
-		const hash = contentHash(texts, configSalt);
-		if (inMemoryBuildCache && inMemoryBuildCache.has(slug)) {
-			const cachedEntry = inMemoryBuildCache.get(slug);
-			if (cachedEntry.hash === hash) {
-				log(`build cache hit for "${slug}"`);
-				return cachedEntry.promise;
-			}
-
-			// Same slug with changed content in the same build should regenerate.
-			inMemoryBuildCache.delete(slug);
-			log(`build cache invalidated for "${slug}" due to hash change`);
-		}
-
-		const generationPromise = generateImage(texts, slug);
-
-		if (inMemoryBuildCache) {
-			inMemoryBuildCache.set(slug, { hash, promise: generationPromise });
-		}
-
-		const result = await generationPromise;
-		if (!result && inMemoryBuildCache) {
-			// Retry on later calls if this attempt failed.
-			inMemoryBuildCache.delete(slug);
-		}
-
-		return result;
+		buildQueue.set(slug, texts);
+		log(`queued share-card for "${slug}"`);
+		return publicUrl;
 	};
 }
