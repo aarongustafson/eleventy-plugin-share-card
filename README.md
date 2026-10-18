@@ -297,6 +297,12 @@ The plugin uses a **character-width estimation** algorithm rather than full font
 - Works accurately enough for Latin titles and tags
 - Can be tuned per layer via (future) `charWidthRatio` override
 
+Words wider than `maxWidth` are hard-broken even when they are the first or only word, including bare URLs. Breaks preserve whole Unicode grapheme clusters, so surrogate pairs, combining sequences, and joined emoji are not split. If a single grapheme is itself wider than `maxWidth`, it is kept intact on its own line and may exceed the estimated limit.
+
+Wrapping uses estimated widths, not rendered font measurements. Grapheme-safe breaks do not improve width estimates for CJK or other scripts, and actual rendered lines may still exceed `maxWidth`.
+
+After upgrading to a wrapping fix, remove the configured `cacheFile` (default: `./_cache/share-cards.json`) before rebuilding to regenerate existing cards. Layout algorithm changes alone do not invalidate cached images.
+
 If you find that a particular font renders significantly wider or narrower, open an issue or PR — the algorithm is small and easy to adjust.
 
 ---

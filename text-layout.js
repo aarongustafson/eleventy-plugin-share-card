@@ -49,8 +49,8 @@ export function estimateTextWidth(text, fontSize) {
 /**
  * Wrap text into lines whose estimated pixel width does not exceed maxWidth.
  *
- * Words that are individually longer than maxWidth are hard-broken at the
- * boundary so the output always fits.
+ * Words that are individually longer than maxWidth are hard-broken at grapheme
+ * boundaries. A single grapheme wider than maxWidth is kept intact.
  *
  * @param {string} text - the raw text to wrap
  * @param {number} maxWidth - maximum line width in pixels
@@ -75,39 +75,33 @@ export function wrapText(text, maxWidth, fontSize, charWidthRatio = 1) {
 
 	for (const word of words) {
 		const wordWidth = scaledTextWidth(word);
-		const spaceWidth = currentLine ? scaledSpaceWidth : 0;
 
-		if (currentLine && currentWidth + spaceWidth + wordWidth > maxWidth) {
-			// Current line is full — flush it
+		if (
+			currentLine &&
+			currentWidth + scaledSpaceWidth + wordWidth > maxWidth
+		) {
 			lines.push(currentLine);
+			currentLine = '';
+			currentWidth = 0;
+		}
 
-			if (wordWidth > maxWidth) {
-				// Hard-break words wider than the whole area
-				let remaining = word;
-				while (scaledTextWidth(remaining) > maxWidth) {
-					// Binary-search the break point
-					let lo = 1;
-					let hi = remaining.length;
-					while (lo < hi) {
-						const mid = Math.ceil((lo + hi) / 2);
-						if (
-							scaledTextWidth(remaining.slice(0, mid)) <= maxWidth
-						) {
-							lo = mid;
-						} else {
-							hi = mid - 1;
-						}
-					}
-					lines.push(remaining.slice(0, lo));
-					remaining = remaining.slice(lo);
+		if (wordWidth > maxWidth) {
+			const segments = new Intl.Segmenter(undefined, {
+				granularity: 'grapheme',
+			}).segment(word);
+
+			for (const { segment } of segments) {
+				const segmentWidth = scaledTextWidth(segment);
+				if (currentLine && currentWidth + segmentWidth > maxWidth) {
+					lines.push(currentLine);
+					currentLine = '';
+					currentWidth = 0;
 				}
-				currentLine = remaining;
-				currentWidth = scaledTextWidth(remaining);
-			} else {
-				currentLine = word;
-				currentWidth = wordWidth;
+				currentLine += segment;
+				currentWidth += segmentWidth;
 			}
 		} else {
+			const spaceWidth = currentLine ? scaledSpaceWidth : 0;
 			currentLine = currentLine ? `${currentLine} ${word}` : word;
 			currentWidth += spaceWidth + wordWidth;
 		}
